@@ -1,0 +1,109 @@
+---
+title: "behavior and  Breast Cancer Pleiotropy analysis"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+require(dmetar)
+library(MRcML)
+library("IMRP")
+library(tidyverse)
+library(dplyr)
+library(MRMix)
+library(MRPRESSO)
+```
+
+## Drink and Breast Cancer
+
+**Data source**
+
+- Exposure: Social Science Genetic Association Consortium 2019 GWAS, [Genome-wide association analyses of risk tolerance and risky behaviors in over 1 million individuals identify hundreds of loci and shared genetic influences](https://www.nature.com/articles/s41588-018-0309-3#Tab1).
+- Outcome: Breast Cancer Association Consortium 2020 GWAS on Breast Cancer [Zhang H et al (Nat Genet, 2020)](https://www.ncbi.nlm.nih.gov/pubmed/32424353). 
+
+
+> Step 1. Load and tidy data
+
+Load the dataset. Keep the following variables: SNP ID (SNP), chromosome (chr), base pair (bp), effect and non-effect alleles (EA.x, NEA.x, EA,y, NEA.y), sample size of the study associated with X (nx), estimate of genetic effect (beta.x, beta.y) and standard errors (se.x, se.y), effect allele frequency (EAF.x, EAF.y). Remove the SNPs of which the alleles do not match between the exposure and outcome datasets.
+
+```{r}
+Drink_BC<-read.csv("Data/Drink_BC.csv")
+```
+
+There are 78 snps in both exposure and outcome dataset. 
+
+```{r}
+data = Drink_BC%>%
+  mutate(beta.y = Beta.meta) %>%
+  select(SNP= SNPID, chr = CHR, bp=Position.iCOGs, EA.x = Effect.allele, beta.x = Beta, 
+         se.x = SE, EAF.x = EAF,
+         EA.y = Effect.Meta, NEA.y = Baseline.Meta, beta.y=Beta.meta, se.y = sdE.meta, EAF.y = Freq.Gwas) 
+# check allele 
+data %>% filter(!((EA.x==EA.y) | (EA.x==NEA.y))) %>% nrow()
+```
+
+
+>Step 2. Harmonize data
+
+Check the allele frequency of palindromic SNPs. Results show that the are coded with respect to the same strand.
+
+```{r}
+data %>% filter((EA.y=="A"&NEA.y=="T") | (EA.y=="T"&NEA.y=="A") | (EA.y=="G"&NEA.y=="C") | (EA.y=="C"&NEA.y=="G")) %>%
+    select(SNP, EA.x, EAF.x, EA.y, NEA.y, EAF.y)
+```
+
+
+
+
+Flip the sign of beta.y if the effect allele in the study associated with X is the non-effect allele in the study associated with Y.
+
+```{r}
+data = data %>% mutate(beta.y = ifelse(EA.x==EA.y,beta.y,-beta.y), MAF = pmin(EAF.x,1-EAF.x))
+```
+
+
+>Step 3. Standardize data
+
+Since the exposure (Drink) and outcome (BC) are all binary, the summary statistics are standardized by genotypic variance calculated as $2*MAF*(1-MAF)$ under Hardy-Weinberg equilibrium.
+
+```{r}
+data_std = with(data, standardize(beta.x,beta.y,se.x,se.y,xtype = "binary", 
+                                  ytype = "binary", nx = NULL, ny = NULL, MAF = MAF))
+```   
+
+> Step 5. Analysis
+
+1. cML-MA Method
+
+```{r}
+cML_result = mr_cML(data$beta.x,
+                    data$beta.y,
+                    data$se.x,
+                    data$se.y,
+                    n = 414343,
+                    random_start = 100,
+                    random_seed = 1)
+cML_result
+```
+
+2. MRMix analysis
+
+```{r}
+res = MRMix(data_std$betahat_x_std, data_std$betahat_y_std, 
+            data_std$sx_std, data_std$sy_std, profile = TRUE)
+str(res)
+```
+
+3. MR-Egger
+
+```{r}
+Egger<-MREgger(BetaYG="beta.y", BetaXG="beta.x",seBetaYG="se.y", data=data)
+Egger
+```
+
+4. MR-Presso
+```{r}
+presso<-mr_presso(BetaOutcome = "beta.y", BetaExposure = "beta.x", SdOutcome = "se.y", SdExposure = "se.x", OUTLIERtest = TRUE, DISTORTIONtest = TRUE, data = data, NbDistribution = 10000,  SignifThreshold = 0.05)
+presso
+```
+
